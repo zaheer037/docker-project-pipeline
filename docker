@@ -1,0 +1,189 @@
+
+LAUNCH INSTANCE WITH T2.LARGE
+SETUP JENKINS
+INSTALL GIT 
+INSTALL TRIVY 
+
+ steps to install trivy:
+wget https://github.com/aquasecurity/trivy/releases/download/v0.18.3/trivy_0.18.3_Linux-64bit.tar.gz
+tar zxvf trivy_0.18.3_Linux-64bit.tar.gz
+sudo mv trivy /usr/local/bin/
+Vim .bashrc
+export PATH=$PATH:/usr/local/bin/
+source .bashrc  
+
+INSTALL DOCKER AND GIVE PERMISSIONS TO /VAR/RUN/DOCKER.SOCK
+CREATE A SONAR CONTAINER USING DOCKER  AND CONNECT TO SONARQUBE (docker run -d --name sonar -p 9000:9000 sonarqube:lts-community) 
+INSTALL THESE FOLLOWING PLUGINS (Eclipse Temurin Installer, SonarQube Scanner, NodeJs Plugin)
+
+Configure Java and Nodejs in Global Tool Configuration
+
+JDK NAME = jdk17 (jdk-17.0.8.1+1)  
+NODE NAME = node16 (NodeJs 16.2.0)
+
+Configure Sonar Server in Manage Jenkins
+CREATE A USER IN SONAR AND GENEARATE A TOKEN FOR THAT USER 
+ADD THESE TOKEN IN JENKINS CREDENTIALS 
+Now, go to Dashboard → Manage Jenkins → System and Add sonarqube and save it 
+
+Configure sonar in Global Tool Configuration
+SONAR NAME = sonar-scanner (SonarQube Scanner 5.0.1.3006)
+In the Sonarqube Dashboard add a quality gate also
+Administration → Configuration →Webhooks
+
+
+Install OWASP Dependency Check Plugins
+
+GotoDashboard → Manage Jenkins → Plugins → OWASP Dependency-Check. Click on it and install it without restart.
+First, we configured the Plugin and next, we had to configure the Tool
+Goto Dashboard → Manage Jenkins → Tools →
+Name: DP-Check (dependency-check 6.5.1) from github.com
+
+
+Install Docker pipeline plugin and store docker hub credentials 
+
+
+
+
+pipeline {
+    agent any
+    tools {
+        jdk 'jdk17'
+        nodejs 'node16'
+    }
+    environment {
+        SCANNER_HOME=tool 'mysonar'
+    }
+    stages {
+        stage ("Clean") {
+            steps {
+                cleanWs()
+            }
+        }
+        stage ("Code") {
+            steps {
+                git branch: 'main', url: 'https://github.com/devops0014/Zomato-Repo.git'
+            }
+        }
+        stage("Sonarqube Analysis") {
+            steps{
+                withSonarQubeEnv('mysonar') {
+                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=zomato \
+                    -Dsonar.projectKey=zomato '''
+                }
+            }
+        }
+        stage ("Quality Gates") {
+            steps {
+                script {
+                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
+                }
+            }
+        }
+        stage ("Install dependencies") {
+            steps {
+                sh 'npm install'
+            }
+        }
+        stage ("OWASP") {
+            steps {
+                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'Dp-Check'
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+            }
+        }
+        stage ("Trivy scan") {
+            steps {
+                sh "trivy fs . > trivyfs.txt"
+            }
+        }
+        
+        stage ("Build Dockerfile") {
+            steps {
+                sh 'docker build -t image1 .'
+            }
+        }
+        stage("Docker Build & Push"){
+            steps{
+                script{
+                    withDockerRegistry(credentialsId: 'docker-password') {
+                        sh "docker tag image1 shaikmustafa/loki:mydockerimage"
+                        sh "docker push shaikmustafa/loki:mydockerimage"
+                    }
+                }
+            }
+        }
+        stage ("Scan image") {
+            steps {
+                sh 'trivy image shaikmustafa/loki:mydockerimage'
+            }
+        }
+        stage ("Deploy") {
+            steps {
+                sh 'docker run -d --name zomato -p 3000:3000 shaikmustafa/loki:mydockerimage'
+            }
+        }
+    }
+}
+
+
+
+=======================================================================================================================================
+
+CREATE CLUSTER USING KOPS
+
+INSTALL HELM:
+curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 
+chmod 700 get_helm.sh
+./get_helm.sh
+helm version
+
+INSTALL ARGO CD USING HELM
+kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl get all -n argocd
+
+
+
+EXPOSE ARGOCD SERVER:
+kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
+yum install jq -y
+export ARGOCD_SERVER='kubectl get svc argocd-server -n argocd -o json | jq --raw-output '.status.loadBalancer.ingress[0].hostname''
+echo $ARGOCD_SERVER
+kubectl get svc argocd-server -n argocd -o json | jq --raw-output .status.loadBalancer.ingress[0].hostname
+The above command will provide load balancer URL to access ARGO CD
+
+
+TO GET ARGO CD PASSWORD:
+export ARGO_PWD='kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d'
+echo $ARGO_PWD
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+The above command to provide password to access argo cd
+
+
+CREATE APP AND FORCE IT 
+SETUP MONOTORING
+
+
+
+INSTALL LOKI AND PROMTAIL AND CONFIGURE IT TO GRAFANA
+mkdir grafana_configs
+cd grafana_configs
+wget https://raw.githubusercontent.com/grafana/loki/v2.8.0/cmd/loki/loki-local-config.yaml -O loki-config.yaml
+wget https://raw.githubusercontent.com/grafana/loki/v2.8.0/clients/cmd/promtail/promtail-docker-config.yaml -O promtail-config.yaml
+sudo docker run -d --name loki -v $(pwd):/mnt/config -p 3100:3100 grafana/loki:2.8.0 --config.file=/mnt/config/loki-config.yaml
+sudo docker run -d --name promtail -v $(pwd):/mnt/config -v /var/log:/var/log --link loki grafana/promtail:2.8.0 --config.file=/mnt/config/promtail-config.yaml
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
